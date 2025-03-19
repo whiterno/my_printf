@@ -5,13 +5,13 @@ section .bss
 
 section .data
 
-    format          db "Hello, I have %d children", 0xa, 0x0
-    error_msg       db "Unknown specificator has occured", 0xa
+    format          db "%d children", 0xa, 0x0
+    error_msg       db "%% : Unknown specificator has occured", 0xa
     error_msg_len   dq $ - error_msg
 
 section .rodata
 
-.FuncTable:
+func_table:
     dq printBinToBuffer      ; %b
     dq printCharToBuffer     ; %c
     dq printDecToBuffer      ; %d
@@ -50,7 +50,7 @@ section .text
     and rdx, rax         ; rdx &= rax
     shr rax, %1          ; rax >> %1
 
-    add rdx, 30h         ; rdx += 30h
+    add rdx, '0'         ; rdx += 30h
 %endmacro
 
 %macro PRINT_CHAR_TO_BUFFER 0
@@ -69,8 +69,8 @@ section .text
 %endmacro
 
 %macro CHECK_FOR_NULL_CHAR 0
-    movzx rax, byte [rsi]   ; rax = [rsi]
-    cmp rax, 0              ; if (rax == 0)
+    mov bl, byte [rsi]     ; bl = [rsi]
+    cmp bl, 0              ; if (bl == 0)
 %endmacro
 
 %macro FLUSH 0
@@ -97,15 +97,13 @@ section .text
     pop rax
 %endmacro
 
-global _start
+global myPrintf
 
 ;--------------------------------------------------------------------
 ;---------------------------MAIN-------------------------------------
 ;-------------------------FUNCTION-----------------------------------
 ;--------------------------------------------------------------------
-_start:
-    mov rdi, format
-
+myPrintf:
     push rbp
     mov rbp, rsp
 
@@ -113,21 +111,19 @@ _start:
     push r8
     push rcx
     push rdx
-    push 10     ; rsi needed!
+    push rsi
     push rdi
 
-    pop rsi
-    mov rdi, printf_buf
-    mov r10, 0
+    pop rsi                 ; rsi = format string
+    mov rdi, printf_buf     ; rsi = printf buffer
+    mov r10, 16             ; address shift for arg
 
-    ; call checkFormat
     call asmPrintf
 
     add rsp, 48
 
     pop rbp
 
-.Exit:
     mov rax, 60
     syscall
 
@@ -140,20 +136,59 @@ _start:
 ;Destr:
 ;--------------------------------------------------------------------
 asmPrintf:
+.Loop:
     CHECK_FOR_NULL_CHAR
     je .Done
 
+    cmp bl, '%'
+    je .SpecificatorCheck
+
+    movsb
+    jmp .Loop
+
+.SpecificatorCheck:
+    inc rsi
+    movzx rbx, byte [rsi]
+
+    cmp rbx, '%'
+    je .Percent
+
+    sub rbx, 'b'
+    cmp rbx, 23
+    ja .Error
+
+    push rsi
+    mov rsi, rsp
+    add rsi, r10
+
+    call [func_table + rbx * 8]
+
+    pop rsi
+    inc rsi
+    jmp .Loop
+
+.Percent:
+    movsb
+    jmp .Loop
+
+.Error:
+    FLUSH
+
+    call noSuchSpecificator
+
 .Done:
+    FLUSH
     ret
 
 ;--------------------------------------------------------------------
 ;%c
 ;Entry: RSI - char address
-;       RDI - printf buffer address
-;Exit:  RSI + 1, RDI + 1
+;       RDI - printf buffer address (0 if for check)
+;Exit:  RSI + 1, RDI + 1, R10 + 8
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printCharToBuffer:
+    add r10, 8
 
     movsb               ; [rdi++] = [rsi++]
 
@@ -162,11 +197,12 @@ printCharToBuffer:
 ;--------------------------------------------------------------------
 ;%d
 ;Entry: RSI - decimal address
-;       RDI - printf buffer address
+;       RDI - printf buffer address (0 if for check)
 ;Exit:  None
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printDecToBuffer:
+    add r10, 8
 
     push rdi                    ; save rdi
     mov rdi, num_to_askii_buff
@@ -183,11 +219,12 @@ printDecToBuffer:
 ;--------------------------------------------------------------------
 ;%x
 ;Entry: RSI - heximal address
-;       RDI - printf buffer address
+;       RDI - printf buffer address (0 if for check)
 ;Exit:  None
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printHexToBuffer:
+    add r10, 8
 
     push rdi                    ; save rdi
     mov rdi, num_to_askii_buff
@@ -204,11 +241,12 @@ printHexToBuffer:
 ;--------------------------------------------------------------------
 ;%o
 ;Entry: RSI - octal address
-;       RDI - printf buffer address
+;       RDI - printf buffer address (0 if for check)
 ;Exit:  None
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printOctToBuffer:
+    add r10, 8
 
     push rdi                    ; save rdi
     mov rdi, num_to_askii_buff
@@ -225,11 +263,12 @@ printOctToBuffer:
 ;--------------------------------------------------------------------
 ;%b
 ;Entry: RSI - binary address
-;       RDI - printf buffer address
+;       RDI - printf buffer address (0 if for check)
 ;Exit:  None
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printBinToBuffer:
+    add r10, 8
 
     push rdi                    ; save rdi
     mov rdi, num_to_askii_buff
@@ -245,12 +284,16 @@ printBinToBuffer:
 
 ;--------------------------------------------------------------------
 ;%s
-;Entry: RSI - string address
-;       RDI - printf buffer address
+;Entry: RSI - string pointer address
+;       RDI - printf buffer address (0 if for check)
 ;Exit:  None
 ;Destr: RAX, RSI, RDI
 ;--------------------------------------------------------------------
 printStringToBuffer:
+    add r10, 8
+
+    push rsi
+    mov rsi, [rsi]
 
     CHECK_FOR_NULL_CHAR
     je .Done
@@ -262,6 +305,7 @@ printStringToBuffer:
     jne .CharacterLoop
 
 .Done:
+    pop rsi
     ret
 
 ;--------------------------------------------------------------------
@@ -287,7 +331,7 @@ convertDecToASKII:
 
     div rbx             ; rdx:rax / 10 = rax * 10 + rdx
 
-    add dl, 30h         ; dl += 30h
+    add dl, '0'         ; dl += '0'
 
     PRINT_CHAR_TO_BUFFER
 
@@ -376,12 +420,13 @@ convertBinToASKII:
 ;Destr: None
 ;--------------------------------------------------------------------
 noSuchSpecificator:
+    add rbx, 'b'
+    mov byte 1[error_msg], bl
+
     mov rax, 1
     mov rdi, 1
     mov rsi, error_msg
     mov rdx, [error_msg_len]
     syscall
 
-    mov rax, 60
-    mov rdi, -1
-    syscall
+    ret
