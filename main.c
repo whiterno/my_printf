@@ -3,5 +3,8 @@
 extern void myPrintf();
 
 int main(){
-    myPrintf("%s children %d %d\n", "Hello", 123, 345);
+    int a = 1;
+    int* p = &a;
+    myPrintf("%s What do you think?\n", "123456789Moment of truth");
+    printf("Done\n");
 }

@@ -1,13 +1,25 @@
 section .bss
 
-    printf_buf          resb 128
-    num_to_askii_buff   resb 64
+    printf_buf          resb PRINTF_BUFF_SIZE
+    num_to_askii_buff   resb NUM_BUFF_SIZE
 
 section .data
 
-    format          db "%d children", 0xa, 0x0
     error_msg       db "%% : Unknown specificator has occured", 0xa
     error_msg_len   dq $ - error_msg
+
+    STD_OUT             equ 1
+
+    TO_LETTER_SHIFT     equ 27h
+    NUM_TOP_BORDER      equ 3ah
+
+    SEVENTH_ARG_SHIFT   equ 72
+    RBP_SHIFT           equ 56
+
+    CASE_AMOUNT         equ 23
+
+    PRINTF_BUFF_SIZE    equ 10
+    NUM_BUFF_SIZE       equ 64
 
 section .rodata
 
@@ -60,11 +72,13 @@ section .text
 
 %macro COPY_FROM_NUM_BUFF_TO_PRINTF_BUFF 0
 %%DigitLoop:
-    dec rsi
-    movsb
-    dec rsi
+    dec rsi             ; rsi--
+    movsb               ; *(rdi++) = *(rsi++)
+    dec rsi             ; rsi--
 
-    cmp rsi, num_to_askii_buff
+    FLUSH_IF_OVERFLOW
+
+    cmp rsi, num_to_askii_buff      ; if (rsi == &num_to_askii_buff)
     jne %%DigitLoop
 %endmacro
 
@@ -74,27 +88,39 @@ section .text
 %endmacro
 
 %macro FLUSH 0
-    push rax
-    push rdx
-    push rsi
+    push rax            ;
+    push rdx            ; save reqisters
+    push rsi            ;
 
     mov rdx, printf_buf ; rdx = &printf_buf
     sub rdx, rdi        ; rdx -= rdi
     neg rdx             ; rdx = -rdx
 
-    mov rsi, rdi    ; rsi = rdi
-    sub rsi, rdx    ; rsi -= rdx
+    mov rsi, rdi        ; rsi = rdi
+    sub rsi, rdx        ; rsi -= rdx
 
-    mov rdi, 1      ; rdi = STD_OUT
+    mov rdi, STD_OUT    ; rdi = STD_OUT
 
-    mov rax, 1      ; rax = 1 (sys_write)
+    mov rax, 1          ; rax = 1 (sys_write)
     syscall
 
     mov rdi, printf_buf ; rdi = printf_buf
 
-    pop rsi
-    pop rdx
-    pop rax
+    pop rsi             ;
+    pop rdx             ; revive registers
+    pop rax             ;
+%endmacro
+
+%macro FLUSH_IF_OVERFLOW 0
+    mov rax, rdi                ; rax = rdi
+    sub rax, printf_buf         ; rax -= printf_buf
+
+    cmp rax, PRINTF_BUFF_SIZE   ; if (rax == PRINTF_BUFF_SIZE)
+    jne %%Done
+
+    FLUSH
+
+%%Done:
 %endmacro
 
 global myPrintf
@@ -104,15 +130,15 @@ global myPrintf
 ;-------------------------FUNCTION-----------------------------------
 ;--------------------------------------------------------------------
 myPrintf:
-    push rbp
-    mov rbp, rsp
+    push rbp                ; create stack frame
+    mov rbp, rsp            ;
 
-    push r9
-    push r8
-    push rcx
-    push rdx
-    push rsi
-    push rdi
+    push r9                 ;
+    push r8                 ;
+    push rcx                ; save args to stack
+    push rdx                ;
+    push rsi                ;
+    push rdi                ;
 
     pop rsi                 ; rsi = format string
     mov rdi, printf_buf     ; rsi = printf buffer
@@ -120,12 +146,11 @@ myPrintf:
 
     call asmPrintf
 
-    add rsp, 48
+    add rsp, 40             ; clear stack
 
-    pop rbp
+    pop rbp                 ; revive old rbp
 
-    mov rax, 60
-    syscall
+    ret
 
 ;--------------------------------------------------------------------
 ;Standart printf
@@ -133,48 +158,60 @@ myPrintf:
 ;       RDI - printf buffer address
 ;       Stack - args for printf
 ;Exit:  None
-;Destr:
+;Destr: RAX, RBX, RDX, RDI, RSI, R10
 ;--------------------------------------------------------------------
 asmPrintf:
 .Loop:
+    mov rbx, SEVENTH_ARG_SHIFT          ; rbx = SEVENTH_ARG_SHIFT
+    cmp r10, RBP_SHIFT                  ; if (r10 == RBP_SHIFT)
+    cmove r10, rbx                      ;       r10 = rbx
+
     CHECK_FOR_NULL_CHAR
     je .Done
 
-    cmp bl, '%'
+    cmp bl, '%'                         ; if (bl == '%')
     je .SpecificatorCheck
 
-    movsb
+    movsb                               ; *(rdi++) = *(rsi++)
+
+    FLUSH_IF_OVERFLOW
+
     jmp .Loop
 
 .SpecificatorCheck:
-    inc rsi
-    movzx rbx, byte [rsi]
+    inc rsi                             ; rsi++
+    movzx rbx, byte [rsi]               ; rbx = *(rsi)
 
-    cmp rbx, '%'
+    cmp rbx, '%'                        ; if (rbx == '%')
     je .Percent
 
-    sub rbx, 'b'
-    cmp rbx, 23
+    sub rbx, 'b'                        ; rbx -= 'b'
+    cmp rbx, CASE_AMOUNT                ; if (rbx == CASE_AMOUNT)
     ja .Error
 
-    push rsi
-    mov rsi, rsp
-    add rsi, r10
+    push rsi                            ; save rsi
+    mov rsi, rsp                        ; rsi = rsp
+    add rsi, r10                        ; rsi += r10
 
-    call [func_table + rbx * 8]
+    call [func_table + rbx * 8]         ; call specificator handler
 
-    pop rsi
-    inc rsi
+    pop rsi                             ; revive rsi
+    inc rsi                             ; rsi++
     jmp .Loop
 
 .Percent:
-    movsb
+    movsb                               ; *(rdi++) = *(rsi)
+
+    FLUSH_IF_OVERFLOW
+
     jmp .Loop
 
 .Error:
-    FLUSH
 
     call noSuchSpecificator
+    inc rsi                             ; rsi++
+
+    jmp .Loop
 
 .Done:
     FLUSH
@@ -188,9 +225,11 @@ asmPrintf:
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printCharToBuffer:
-    add r10, 8
+    add r10, 8              ; r10 += 8
 
-    movsb               ; [rdi++] = [rsi++]
+    movsb                   ; *(rdi++) = *(rsi++)
+
+    FLUSH_IF_OVERFLOW
 
     ret
 
@@ -202,15 +241,15 @@ printCharToBuffer:
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printDecToBuffer:
-    add r10, 8
+    add r10, 8                  ; r10 += 8
 
     push rdi                    ; save rdi
-    mov rdi, num_to_askii_buff
+    mov rdi, num_to_askii_buff  ; rdi = &num_to_askii_buff
 
     call convertDecToASKII
 
-    mov rsi, rdi            ; rsi = rdi
-    pop rdi                 ; revive rdi
+    mov rsi, rdi                ; rsi = rdi
+    pop rdi                     ; revive rdi
 
     COPY_FROM_NUM_BUFF_TO_PRINTF_BUFF
 
@@ -224,15 +263,15 @@ printDecToBuffer:
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printHexToBuffer:
-    add r10, 8
+    add r10, 8                  ; r10 += 8
 
     push rdi                    ; save rdi
-    mov rdi, num_to_askii_buff
+    mov rdi, num_to_askii_buff  ; rdi = &num_to_askii_buff
 
     call convertHexToASKII
 
-    mov rsi, rdi            ; rsi = rdi
-    pop rdi                 ; revive rdi
+    mov rsi, rdi                ; rsi = rdi
+    pop rdi                     ; revive rdi
 
     COPY_FROM_NUM_BUFF_TO_PRINTF_BUFF
 
@@ -246,15 +285,15 @@ printHexToBuffer:
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printOctToBuffer:
-    add r10, 8
+    add r10, 8                  ; r10 += 8
 
     push rdi                    ; save rdi
-    mov rdi, num_to_askii_buff
+    mov rdi, num_to_askii_buff  ; rdi = &num_to_askii_buff
 
     call convertOctToASKII
 
-    mov rsi, rdi            ; rsi = rdi
-    pop rdi                 ; revive rdi
+    mov rsi, rdi                ; rsi = rdi
+    pop rdi                     ; revive rdi
 
     COPY_FROM_NUM_BUFF_TO_PRINTF_BUFF
 
@@ -268,15 +307,15 @@ printOctToBuffer:
 ;Destr: RSI, RDI
 ;--------------------------------------------------------------------
 printBinToBuffer:
-    add r10, 8
+    add r10, 8                  ; r10 += 8
 
     push rdi                    ; save rdi
-    mov rdi, num_to_askii_buff
+    mov rdi, num_to_askii_buff  ; rdi = &num_to_askii_buff
 
     call convertBinToASKII
 
-    mov rsi, rdi            ; rsi = rdi
-    pop rdi                 ; revive rdi
+    mov rsi, rdi                ; rsi = rdi
+    pop rdi                     ; revive rdi
 
     COPY_FROM_NUM_BUFF_TO_PRINTF_BUFF
 
@@ -287,25 +326,60 @@ printBinToBuffer:
 ;Entry: RSI - string pointer address
 ;       RDI - printf buffer address (0 if for check)
 ;Exit:  None
-;Destr: RAX, RSI, RDI
+;Destr: RAX, RBX, RDX, RSI, RDI
 ;--------------------------------------------------------------------
 printStringToBuffer:
-    add r10, 8
+    add r10, 8                  ; r10 += 8
 
-    push rsi
-    mov rsi, [rsi]
+    push rsi                    ; save rsi
+    mov rsi, [rsi]              ; rsi = *(rsi)
+
+    mov rbx, -1
+    mov rax, rsi                ; save string beginning address
+    dec rsi                     ; rsi--
+.CountChars:
+    inc rsi                     ; rsi++
+    cmp byte [rsi], 0           ; if (*(rsi) == 0)
+    jne .CountChars
+
+    mov rbx, rsi                ; rbx = rsi
+    sub rbx, rax                ; rbx -= rax
+    inc rbx                     ; rbx++
+
+    mov rsi, rax                ; rsi = rax
+
+    mov rax, PRINTF_BUFF_SIZE   ; rax = PRINTF_BUFF_SIZE
+    sub rax, printf_buf         ; rax -= &printf_buf
+    add rax, rdi                ; rax += rdi
+
+    cmp rbx, rax                ; if (rbx > rax)
+    ja .ManualSyscall
 
     CHECK_FOR_NULL_CHAR
     je .Done
 
 .CharacterLoop:
-    movsb
+    movsb                       ; *(rdi) = *(rsi)
+
+    FLUSH_IF_OVERFLOW
 
     CHECK_FOR_NULL_CHAR
     jne .CharacterLoop
 
+.ManualSyscall:
+    FLUSH
+
+    push rdi                    ; save rdi
+
+    mov rdx, rbx                ; rdx = rbx
+    mov rdi, STD_OUT            ; rdi = STD_OUT
+    mov rax, 1                  ; rax = 1 (sys_write)
+    syscall
+
+    pop rdi                     ; revive rdi
+
 .Done:
-    pop rsi
+    pop rsi                     ; revive rsi
     ret
 
 ;--------------------------------------------------------------------
@@ -315,35 +389,35 @@ printStringToBuffer:
 ;Destr: RAX, RBX, RCX, RDX, RSI, RDI
 ;--------------------------------------------------------------------
 convertDecToASKII:
-    mov rax, [rsi]      ; rax = [rsi]
-    mov rbx, 10         ; bl = 10;
-    xor rcx, rcx        ; rcx = 0
+    mov rax, [rsi]              ; rax = *(rsi)
+    mov rbx, 10                 ; bl = 10;
+    xor rcx, rcx                ; rcx = 0
 
     ; check if num is negative
-    cmp rax, 0          ; if rax >= 0
+    cmp rax, 0                  ; if rax >= 0
     jge .DigitLoop
 
-    mov rcx, -1
-    neg rax             ; rax = -rax
+    mov rcx, -1                 ; rcx = -1
+    neg rax                     ; rax = -rax
 
 .DigitLoop:
-    cqo                 ; rdx = 0
+    cqo                         ; rdx = 0
 
-    div rbx             ; rdx:rax / 10 = rax * 10 + rdx
+    div rbx                     ; rdx:rax / 10 = rax * 10 + rdx
 
-    add dl, '0'         ; dl += '0'
+    add dl, '0'                 ; dl += '0'
 
     PRINT_CHAR_TO_BUFFER
 
-    cmp rax, 0          ; if (rax != 0)
-    jne .DigitLoop      ;
+    cmp rax, 0                  ; if (rax != 0)
+    jne .DigitLoop              ;
 
     ; print '-' to buffer if num is negative
-    cmp rcx, -1         ; if (rcx == -1)
-    jne .Positive       ;
+    cmp rcx, -1                 ; if (rcx == -1)
+    jne .Positive               ;
 
-    mov byte [rdi], '-' ; [rdi] = '-'
-    inc rdi             ; rdi++
+    mov byte [rdi], '-'         ; *(rdi) = '-'
+    inc rdi                     ; rdi++
 
 .Positive:
 
@@ -356,22 +430,22 @@ convertDecToASKII:
 ;Destr: RAX, RBX, RDX, RSI, RDI
 ;--------------------------------------------------------------------
 convertHexToASKII:
-    mov rax, [rsi]      ; rax = [rsi]
+    mov rax, [rsi]                      ; rax = *(rsi)
 
 .DigitLoop:
     GET_NUM_CHAR 4
 
     ; check whether it is 0..9 or a..f
-    mov rbx, rdx        ; rbx = rdx
-    add rbx, 27h        ; rbx += 27h
+    mov rbx, rdx                        ; rbx = rdx
+    add rbx, TO_LETTER_SHIFT            ; rbx += 27h
 
-    cmp rdx, 3ah        ; if (rdx >= 3ah)
-    cmovge rdx, rbx     ;     rdx = rbx
+    cmp rdx, NUM_TOP_BORDER             ; if (rdx >= 3ah)
+    cmovge rdx, rbx                     ;     rdx = rbx
 
     PRINT_CHAR_TO_BUFFER
 
-    cmp rax, 0          ; if (rax != 0)
-    jne .DigitLoop      ;
+    cmp rax, 0                          ; if (rax != 0)
+    jne .DigitLoop                      ;
 
     ret
 
@@ -382,7 +456,7 @@ convertHexToASKII:
 ;Destr: RAX, RDX, RSI, RDI
 ;--------------------------------------------------------------------
 convertOctToASKII:
-    mov rax, [rsi]      ; rax = [rsi]
+    mov rax, [rsi]      ; rax = *(rsi)
 
 .DigitLoop:
     GET_NUM_CHAR 3
@@ -401,7 +475,7 @@ convertOctToASKII:
 ;Destr: RAX, RDX, RSI, RDI
 ;--------------------------------------------------------------------
 convertBinToASKII:
-    mov rax, [rsi]      ; rax = [rsi]
+    mov rax, [rsi]      ; rax = *(rsi)
 
 .DigitLoop:
     GET_NUM_CHAR 1
@@ -420,13 +494,19 @@ convertBinToASKII:
 ;Destr: None
 ;--------------------------------------------------------------------
 noSuchSpecificator:
-    add rbx, 'b'
-    mov byte 1[error_msg], bl
+    push rsi                        ; save registers
+    push rdi                        ;
 
-    mov rax, 1
-    mov rdi, 1
-    mov rsi, error_msg
-    mov rdx, [error_msg_len]
+    add rbx, 'b'                    ; rbx += 'b' (unknown spec letter)
+    mov byte 1[error_msg], bl       ; *(error_msg + 1) = bl
+
+    mov rax, 1                      ; rax = 1 (sys_write)
+    mov rdi, STD_OUT                ; rdi = STD_OUT
+    mov rsi, error_msg              ; rsi = &error_msg
+    mov rdx, [error_msg_len]        ; rdx = *(error_msg_len)
     syscall
+
+    pop rdi                         ; revive registers
+    pop rsi                         ;
 
     ret
