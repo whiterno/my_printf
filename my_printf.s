@@ -5,7 +5,7 @@ section .bss
 
 section .data
 
-    error_msg       db "%% : Unknown specificator has occured", 0xa
+    error_msg       db 0xa, "%% : Unknown specificator has occured", 0xa
     error_msg_len   dq $ - error_msg
 
     STD_OUT             equ 1
@@ -389,7 +389,7 @@ printStringToBuffer:
 ;Destr: RAX, RBX, RCX, RDX, RSI, RDI
 ;--------------------------------------------------------------------
 convertDecToASKII:
-    mov rax, [rsi]              ; rax = *(rsi)
+    movsx rax, dword [rsi]      ; rax = *(rsi)
     mov rbx, 10                 ; bl = 10;
     xor rcx, rcx                ; rcx = 0
 
@@ -498,7 +498,7 @@ noSuchSpecificator:
     push rdi                        ;
 
     add rbx, 'b'                    ; rbx += 'b' (unknown spec letter)
-    mov byte 1[error_msg], bl       ; *(error_msg + 1) = bl
+    mov byte 2[error_msg], bl       ; *(error_msg + 1) = bl
 
     mov rax, 1                      ; rax = 1 (sys_write)
     mov rdi, STD_OUT                ; rdi = STD_OUT
